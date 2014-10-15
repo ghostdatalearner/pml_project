@@ -1,0 +1,134 @@
+---
+title: "Practical Machine Learning Project"
+author: "ghostdatalearner"
+date: "Tuesday, October 14, 2014"
+output: html_document
+---
+# Executive Summary
+This is the final report of the Practical Machine Learning Course, part of Coursera Data Science Specialization. Our goal is predict how well a set of weight lifting exercises were performed based on the data recorded by body sensors. A group of four individuals missperformed the routines on purpose according to five degrees of inaccuracy to build the training set (information available from the website here: http://groupware.les.inf.puc-rio.br/har). We have built a random forest classifier to predict the outcomes of a 20 samples testing set. With 52 predictors and an out sample accuracy of 99.6% it got full grades with the automatic corrrection tool. We have also taken a further step, building a reduced model using only the 15 more important predictors according to the Gini coefficients of the full model. Out of sample accuracy drops to 95.9% but still the reduced model predicts correctly the 20 samples outcome.
+
+## Exploratory analysis
+We load the training set. A visual inspection shows that it contains many cells with NA values. To assess the problem we build an histogram.
+
+```{r, echo = TRUE, fig.height=3,fig.width=8}
+library(caret)
+library(randomForest)
+options(warnings= -1)
+training_set <- read.csv("pml-training.csv", na.strings= c("NA",""," "), header =TRUE)
+```
+<center>
+```{r, echo = TRUE, fig.height=3,fig.width=5}
+qplot(colSums(is.na(training_set[,-ncol(training_set)]))/nrow(training_set),binwidth=0.033)+geom_histogram(fill='blue',binwidth=0.033)+xlab('Fraction of NA values')+ylab('Number of columns')
+```
+<br>
+<font size="small">Fig.1 Distribution of NA values in the training set file</font>
+</center>
+<br>
+As the distribution is so skewed, our approach will be discarding as predictors the columns that contain NAs
+
+## Loading and cleaning data
+We build a function to load the data from the local file and ignore columns 1 to 7 as the information they contain is not relevant for model building. Columns that contain NAs are dropped, and finally we keep only 52 valid predictors.
+```{r , echo = TRUE}
+
+# This function loads and clean the input data that are stored in the 
+# two downloaded files in the working directory
+# The parameter dropcolumns will be set to remove the same columns that
+# were remove in the training_set
+read_clean_data <- function(datafilename,dropcolumns=c())
+{
+  # We have found cells with "NA", empty cells, blnak cells and cells with the string "#DIV/0!"
+  # We consider them all as NA values
+  inputdata <- read.csv2(datafilename, na.strings= c("NA",""," ","#DIV/0!"),header =TRUE, sep=",", stringsAsFactors=FALSE)
+  # Rows 1 to 7 are stripped because they contain dates and ids not necessary for prediction tasks
+  inputdata <- inputdata[,-seq(1,7)]
+  if (length(dropcolumns) == 0)
+  {
+    dropcols <- c((colSums(is.na(inputdata[,-ncol(inputdata)])) > 0))
+    inputdata <- inputdata[,-c(unname(which(dropcols)))]
+    dropcolumns <- c(unname(which(dropcols)))
+  }
+  else
+    inputdata <- inputdata[,-dropcolumns]
+  numericcols <- ncol(inputdata)-1
+  for (i in 1:numericcols) inputdata[,i] <- as.numeric(inputdata[,i])
+  return(list(data = inputdata, dropcols = dropcolumns))
+}
+
+clean_data_train <- read_clean_data("pml-training.csv")
+training_set <- clean_data_train[["data"]]
+# Last column is classe in the training set and must be converted into a factor
+training_set$classe <- as.factor(training_set$classe)
+dropped <- clean_data_train["dropcols"]
+clean_data_test <- read_clean_data("pml-testing.csv",dropcolumns = c(dropped$dropcols))
+testing_set <- clean_data_test[["data"]]
+```
+
+## Model Construction
+
+As the outcome is a factor variable and we have a big training set we have chosen random forest as a good fit for our problem. Firs we tried using the implementation included in caret package but execution time was very high, almost one hour with our available hardware. So, we have used instead the randonForest package, that is a very fast port of an original FORTRAN implementation.
+
+We split the original training file data into two chuncks, 80% for the proper training, and 20% to have an enough big sample for validation.
+
+``` {r , echo = TRUE}
+partition_Train = createDataPartition(training_set$classe, p=0.8, list=FALSE)
+train_chunck = training_set[partition_Train,]
+validation_chunck = training_set[-partition_Train,]
+library(randomForest)
+set.seed(2014)
+fitted_model <- randomForest(classe ~ .,data = train_chunck)
+fitted_model
+```
+
+## Validation
+
+The OOB estimate is quite promising, 0.43% but as we know with such a high number of predictors accuracy is not enough to measure the goodness of the model. We use the 20% of samples that we have stored as validation set.
+
+```{r}
+set.seed(2014)
+crossval_outcome <- predict(fitted_model, validation_chunck)
+confusionMatrix(validation_chunck$classe, crossval_outcome)
+```
+We finally compute the out of sample accuracy, checking if the predicted outcomes of the validation set versus the original classe.
+
+```{r}
+out_of_sample_acc <- sum(crossval_outcome == validation_chunck$classe)/nrow(validation_chunck)
+out_of_sample_acc
+
+```
+
+## Prediction
+
+The last step is applying the model to the testing set. These are the results submitted to the automatic grading script.
+```{r}
+predict(fitted_model, testing_set)
+```
+
+
+## Reduced model
+
+We guess what would happen if we reduce the number of predictors to build the model. We use the importance measurement function defined by Liaw and Wiener (https://dinsdalelab.sdsu.edu/metag.stats/code/randomforest.html)
+
+<center>
+```{r, echo = TRUE, fig.height=8,fig.width=5}
+varImpPlot(fitted_model,)
+```
+<br>
+<font size="small">Fig.2 Importance of predictors (30 most relevant)</font>
+<bR><br>
+</center>
+
+We pick the 15 most significant, build a reduced model and compute the out of sample accuracy with the validation set.
+```{r}
+reduced_model <- randomForest(classe ~ roll_belt + pitch_belt + yaw_belt + total_accel_belt + gyros_belt_x + 
+                                gyros_belt_y + gyros_belt_z + accel_belt_x + accel_belt_y + accel_belt_z +
+                                magnet_belt_x + magnet_belt_y + magnet_belt_z + roll_arm + pitch_arm, 
+                                data = train_chunck)
+
+crossval_outcome_reduced <- predict(reduced_model, validation_chunck)
+sum(crossval_outcome_reduced == validation_chunck$classe)/nrow(validation_chunck)
+```
+The reduced model is around a 4% less accurate. Anyway, we use it to predict the testing set and we get the same results. 
+
+## Conclusion
+
+We have build a random forest model using 52 predictors, dropping the columns of the original that contained NA values. The caret implementation was too slow under these conditions, but the function randomForest provides a quick implementation. If instead of 52 predictors, we pick only the 15 most important, the model losses a 4% of accuracy but works fine in this case. This simple example shows that machine learning always involves a balance of accuracy, features selection and execution time. The goodness of a classifier must be assessed taking into consideration all these variables.
